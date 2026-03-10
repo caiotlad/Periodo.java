@@ -12,14 +12,15 @@ import java.time.Duration;
 import java.util.*;
 
 public class Main {
+
     public static void main(String[] args) {
 
         WebDriver driver = new ChromeDriver();
 
         driver.get("https://sig.ufla.br/modulos/publico/matrizes_curriculares/index.php");
 
-        String codigoCurso = "G010";
-        String codigoMatriz = "202301";
+        String codigoCurso = "G007";
+        String codigoMatriz = "202202";
 
         selecionarCurso(driver, codigoCurso, codigoMatriz);
 
@@ -41,12 +42,10 @@ public class Main {
 
         WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
 
-        // Espera o select aparecer
         wait.until(ExpectedConditions.presenceOfElementLocated(By.id("cod_oferta_curso")));
 
         Select selectCurso = new Select(driver.findElement(By.id("cod_oferta_curso")));
 
-        // Seleciona pelo texto parcial (ex: G010)
         selectCurso.selectByVisibleText(
                 selectCurso.getOptions().stream()
                         .filter(option -> option.getText().contains(codigoCurso))
@@ -55,8 +54,7 @@ public class Main {
                         .getText()
         );
 
-        WebElement botaoEnviar = driver.findElement(By.id("enviar"));
-        botaoEnviar.click();
+        driver.findElement(By.id("enviar")).click();
 
         WebElement matriz = wait.until(
                 ExpectedConditions.elementToBeClickable(
@@ -65,6 +63,7 @@ public class Main {
         );
         matriz.click();
     }
+
     public static int extrairQuantidadePeriodos(WebDriver driver) {
 
         WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
@@ -76,13 +75,11 @@ public class Main {
         );
 
         String textoCompleto = elemento.getText();
-        // Vai retornar: "Quantidade de Períodos: 8"
-
         String numero = textoCompleto.replaceAll("\\D+", "");
-        // Remove tudo que não for número
 
         return Integer.parseInt(numero);
     }
+
     public static Map<String, Disciplina> extrairGradeCompleta(WebDriver driver) {
 
         WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
@@ -91,7 +88,6 @@ public class Main {
         Map<String, Disciplina> grafo = new HashMap<>();
 
         List<WebElement> tabelas = driver.findElements(By.tagName("table"));
-
         WebElement tabelaModulos = null;
 
         for (WebElement tabela : tabelas) {
@@ -107,14 +103,12 @@ public class Main {
         }
 
         List<WebElement> linhas = tabelaModulos.findElements(By.tagName("tr"));
-
         int periodoAtual = 0;
 
         for (WebElement linha : linhas) {
 
             String textoLinha = linha.getText().trim();
 
-            // Detecta mudança de módulo
             if (textoLinha.toLowerCase().contains("módulo")) {
                 periodoAtual = extrairNumeroPeriodo(textoLinha);
                 continue;
@@ -167,37 +161,6 @@ public class Main {
         return numero.isEmpty() ? 0 : Integer.parseInt(numero);
     }
 
-    public static void imprimirResumoGrafo(Map<String, Disciplina> grafo) {
-
-        System.out.println("\n===== RESUMO DO GRAFO (ORDENADO) =====");
-
-        List<Disciplina> lista = new ArrayList<>(grafo.values());
-
-        lista.sort((d1, d2) -> {
-            if (d1.periodo != d2.periodo) {
-                return Integer.compare(d1.periodo, d2.periodo);
-            }
-            return d1.codigo.compareTo(d2.codigo);
-        });
-
-        for (Disciplina d : lista) {
-
-            System.out.println("\nDisciplina: " + d.codigo + " - " + d.nome);
-            System.out.println("Período: " + d.periodo);
-            System.out.println("Créditos: " + d.creditos);
-
-            if (d.requisitos.isEmpty()) {
-                System.out.println("Pré-requisitos: NÃO POSSUI");
-            } else {
-                System.out.println("Pré-requisitos:");
-                for (Requisito r : d.requisitos) {
-                    System.out.println("   → " + r.codigo + " (" + r.tipo + ")");
-                }
-            }
-        }
-
-        System.out.println("\n===== FIM DO RESUMO =====");
-    }
 
     public static void construirDependentes(Map<String, Disciplina> grafo) {
 
@@ -205,41 +168,24 @@ public class Main {
 
             for (Requisito r : d.requisitos) {
 
-                // IGNORAR corequisito na estrutura de precedência
-                if (r.tipo == TipoRequisito.COREQUISITO) {
-                    continue;
-                }
-
                 Disciplina prereq = grafo.get(r.codigo);
 
                 if (prereq != null) {
-                    prereq.adicionarDependente(d);
+
+                    int peso = (r.tipo == TipoRequisito.COREQUISITO) ? 0 : 1;
+
+                    prereq.dependentes.add(new Aresta(d, peso));
                 }
             }
         }
     }
-    public static void imprimirDependentes(Map<String, Disciplina> grafo) {
 
-        System.out.println("\n===== DEPENDENTES =====");
-
-        for (Disciplina d : grafo.values()) {
-
-            if (!d.dependentes.isEmpty()) {
-                System.out.println(d.nome + " é pré-requisito de:");
-
-                for (Disciplina dep : d.dependentes) {
-                    System.out.println("   → " + dep.nome);
-                }
-            }
-        }
-    }
     public static List<Disciplina> ordenacaoTopologica(Map<String, Disciplina> grafo) {
 
         Map<Disciplina, Integer> grauEntrada = new HashMap<>();
         Queue<Disciplina> fila = new LinkedList<>();
         List<Disciplina> ordem = new ArrayList<>();
 
-        // 1️⃣ Calcular grau de entrada ignorando COREQUISITO
         for (Disciplina d : grafo.values()) {
 
             int grau = 0;
@@ -257,43 +203,41 @@ public class Main {
             }
         }
 
-        // 2️⃣ Algoritmo de Kahn
         while (!fila.isEmpty()) {
 
             Disciplina atual = fila.poll();
             ordem.add(atual);
 
-            for (Disciplina dependente : atual.dependentes) {
+            for (Aresta aresta : atual.dependentes) {
 
-                int novoGrau = grauEntrada.get(dependente) - 1;
-                grauEntrada.put(dependente, novoGrau);
+                if (aresta.peso == 1) { // só reduz grau para forte/minimo
+                    Disciplina dependente = aresta.destino;
 
-                if (novoGrau == 0) {
-                    fila.add(dependente);
+                    int novoGrau = grauEntrada.get(dependente) - 1;
+                    grauEntrada.put(dependente, novoGrau);
+
+                    if (novoGrau == 0) {
+                        fila.add(dependente);
+                    }
                 }
             }
         }
 
-        // 3️⃣ Verificação de ciclo real
         if (ordem.size() != grafo.size()) {
-            throw new RuntimeException("O grafo possui ciclo real de pré-requisitos!");
+            throw new RuntimeException("O grafo possui ciclo real de pré-requisitos fortes!");
         }
 
         return ordem;
     }
-    public static void calcularPeriodoMaximo(
-            Map<String, Disciplina> grafo,
-            int totalPeriodos
-    ) {
+
+    public static void calcularPeriodoMaximo(Map<String, Disciplina> grafo, int totalPeriodos) {
 
         List<Disciplina> ordem = ordenacaoTopologica(grafo);
 
-        // Inicializa todos com totalPeriodos
         for (Disciplina d : grafo.values()) {
             d.periodoMaximo = totalPeriodos;
         }
 
-        // Percorrer ao contrário
         for (int i = ordem.size() - 1; i >= 0; i--) {
 
             Disciplina d = ordem.get(i);
@@ -302,24 +246,27 @@ public class Main {
 
                 int menor = Integer.MAX_VALUE;
 
-                for (Disciplina dep : d.dependentes) {
-                    menor = Math.min(menor, dep.periodoMaximo);
+                for (Aresta aresta : d.dependentes) {
+
+                    Disciplina dep = aresta.destino;
+                    int peso = aresta.peso;
+
+                    menor = Math.min(menor, dep.periodoMaximo - peso);
                 }
 
-                d.periodoMaximo = menor - 1;
+                d.periodoMaximo = menor;
             }
 
-            // nunca pode ser menor que o período original
             d.periodoMaximo = Math.max(d.periodoMaximo, d.periodo);
         }
     }
+
     public static void imprimirPeriodoMaximo(Map<String, Disciplina> grafo) {
 
         List<Disciplina> lista = new ArrayList<>(grafo.values());
-
         lista.sort((a, b) -> Integer.compare(a.periodo, b.periodo));
 
-        System.out.println("\n===== PERÍODO MÁXIMO CALCULADO =====");
+        System.out.println("\n PERÍODO MÁXIMO ");
 
         for (Disciplina d : lista) {
             System.out.println(
@@ -329,14 +276,8 @@ public class Main {
             );
         }
     }
-
-
-
-
-
-
-
 }
+
 enum TipoRequisito {
     FORTE,
     MINIMO,
@@ -353,6 +294,16 @@ class Requisito {
     }
 }
 
+class Aresta {
+    Disciplina destino;
+    int peso; // 1 = forte/minimo | 0 = corequisito
+
+    public Aresta(Disciplina destino, int peso) {
+        this.destino = destino;
+        this.peso = peso;
+    }
+}
+
 class Disciplina {
 
     String codigo;
@@ -361,7 +312,7 @@ class Disciplina {
     int creditos;
 
     List<Requisito> requisitos = new ArrayList<>();
-    List<Disciplina> dependentes = new ArrayList<>();
+    List<Aresta> dependentes = new ArrayList<>();
 
     int periodoMaximo;
 
@@ -374,10 +325,6 @@ class Disciplina {
 
     public void adicionarRequisito(String codigo, TipoRequisito tipo) {
         requisitos.add(new Requisito(codigo, tipo));
-    }
-
-    public void adicionarDependente(Disciplina d) {
-        dependentes.add(d);
     }
 
     @Override
