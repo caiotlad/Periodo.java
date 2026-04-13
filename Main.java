@@ -13,8 +13,6 @@ public class Main {
 
         Scanner sc = new Scanner(System.in);
 
-        // ================= INPUT CURSO =================
-
         System.out.print("Digite o código do curso (ex: G010): ");
         String codigoCurso = sc.nextLine();
 
@@ -31,34 +29,231 @@ public class Main {
 
         Map<String, Disciplina> grafo = extrairGradeCompleta(driver);
 
-        // ================= INPUT USUÁRIO =================
+        //  SEPARA TCC
+        List<Disciplina> tccs = extrairTCCs(grafo);
 
+        //  INPUT
         EstadoAluno estado = lerEstadoAluno(grafo);
-
         propagarReprovacoes(grafo, estado);
-
         calcularConcluidas(grafo, estado);
 
         Configuracao config = lerConfiguracao();
 
-        // ================= PRÉ-PROCESSAMENTO =================
-
         removerDisciplinasConcluidas(grafo, estado);
 
         construirDependentes(grafo);
-
         calcularPeriodoMaximo(grafo, quantidade);
 
-        // ================= PLANO =================
-
+        //  PLANO SEM TCC
         Map<Integer, List<Disciplina>> plano = montarPlano(grafo, estado, config);
+
+        //  ADICIONA TCC
+        adicionarTCCNoFinal(plano, tccs, config);
 
         imprimirPlano(plano);
 
         driver.quit();
     }
 
-    // ================= INPUT =================
+    //  TCC
+
+    public static List<Disciplina> extrairTCCs(Map<String, Disciplina> grafo) {
+
+        List<Disciplina> tccs = new ArrayList<>();
+
+        Iterator<Map.Entry<String, Disciplina>> it = grafo.entrySet().iterator();
+
+        while (it.hasNext()) {
+            Disciplina d = it.next().getValue();
+
+            if (ehTCC(d)) {
+                tccs.add(d);
+                it.remove();
+            }
+        }
+
+        return tccs;
+    }
+
+    public static boolean ehTCC(Disciplina d) {
+        String nome = d.nome.toLowerCase();
+        return nome.contains("trabalho de conclusão")
+                || nome.contains("tcc")
+                || nome.contains("estágio supervisionado");
+    }
+
+    public static List<Disciplina> ordenarTCCs(List<Disciplina> tccs) {
+
+        Map<String, Disciplina> mapa = new HashMap<>();
+        for (Disciplina d : tccs) mapa.put(d.codigo, d);
+
+        List<Disciplina> ordenado = new ArrayList<>();
+        Set<String> feitas = new HashSet<>();
+
+        while (ordenado.size() < tccs.size()) {
+
+            for (Disciplina d : tccs) {
+
+                if (feitas.contains(d.codigo)) continue;
+
+                boolean pode = true;
+
+                for (Requisito r : d.requisitos) {
+                    if (r.tipo != TipoRequisito.COREQUISITO &&
+                            mapa.containsKey(r.codigo) &&
+                            !feitas.contains(r.codigo)) {
+
+                        pode = false;
+                        break;
+                    }
+                }
+
+                if (pode) {
+                    ordenado.add(d);
+                    feitas.add(d.codigo);
+                }
+            }
+        }
+
+        return ordenado;
+    }
+
+    public static void adicionarTCCNoFinal(
+            Map<Integer, List<Disciplina>> plano,
+            List<Disciplina> tccs,
+            Configuracao config
+    ) {
+
+        if (tccs.isEmpty()) return;
+
+        List<Disciplina> ordenados = ordenarTCCs(tccs);
+
+        int ultimoPeriodo = plano.isEmpty() ? 0 : Collections.max(plano.keySet());
+
+        int periodo = ultimoPeriodo;
+
+        // sem reserva → empilha no final respeitando ordem
+        if (config.periodosTCC == 0) {
+
+            for (Disciplina d : ordenados) {
+
+                plano.putIfAbsent(periodo, new ArrayList<>());
+
+                if (!plano.get(periodo).isEmpty()) {
+                    periodo++;
+                    plano.putIfAbsent(periodo, new ArrayList<>());
+                }
+
+                plano.get(periodo).add(d);
+            }
+
+            return;
+        }
+
+        // com reserva → força sequência no final
+        periodo = ultimoPeriodo + 1;
+
+        for (Disciplina d : ordenados) {
+
+            plano.putIfAbsent(periodo, new ArrayList<>());
+            plano.get(periodo).add(d);
+
+            periodo++; // garante ordem (TCC1 → TCC2)
+        }
+    }
+
+    //  PLANEJAMENTO
+
+    public static Map<Integer, List<Disciplina>> montarPlano(
+            Map<String, Disciplina> grafoOriginal,
+            EstadoAluno estado,
+            Configuracao config
+    ) {
+
+        Map<String, Disciplina> grafo = new HashMap<>(grafoOriginal);
+        Map<Integer, List<Disciplina>> plano = new HashMap<>();
+
+        Set<String> feitas = new HashSet<>(estado.concluidas);
+        int periodoAtual = estado.ultimoPeriodoConcluido + 1;
+
+        while (!grafo.isEmpty()) {
+
+            List<Disciplina> disponiveis = new ArrayList<>();
+
+            for (Disciplina d : grafo.values()) {
+                if (podeCursar(d, feitas)) {
+                    disponiveis.add(d);
+                }
+            }
+
+            disponiveis.sort(Comparator.comparingInt(d -> d.periodoMaximo));
+
+            int creditosAtual = 0;
+            List<Disciplina> alocadas = new ArrayList<>();
+
+            for (Disciplina d : disponiveis) {
+
+                int custoTotal = d.creditos;
+
+                // soma corequisitos
+                for (Requisito r : d.requisitos) {
+                    if (r.tipo == TipoRequisito.COREQUISITO) {
+                        Disciplina co = grafo.get(r.codigo);
+                        if (co != null && !alocadas.contains(co)) {
+                            custoTotal += co.creditos;
+                        }
+                    }
+                }
+
+                if (creditosAtual + custoTotal > config.maxCreditosPorPeriodo)
+                    continue;
+
+                alocadas.add(d);
+                creditosAtual += d.creditos;
+
+                for (Requisito r : d.requisitos) {
+                    if (r.tipo == TipoRequisito.COREQUISITO) {
+
+                        Disciplina co = grafo.get(r.codigo);
+
+                        if (co != null && !alocadas.contains(co)) {
+                            alocadas.add(co);
+                            creditosAtual += co.creditos;
+                        }
+                    }
+                }
+            }
+
+            if (alocadas.isEmpty()) {
+                alocadas.add(disponiveis.get(0));
+            }
+
+            plano.put(periodoAtual, alocadas);
+
+            for (Disciplina d : alocadas) {
+                feitas.add(d.codigo);
+                grafo.remove(d.codigo);
+            }
+
+            periodoAtual++;
+        }
+
+        return plano;
+    }
+
+    public static boolean podeCursar(Disciplina d, Set<String> feitas) {
+
+        for (Requisito r : d.requisitos) {
+
+            if (r.tipo == TipoRequisito.COREQUISITO) continue;
+
+            if (!feitas.contains(r.codigo)) return false;
+        }
+
+        return true;
+    }
+
+    //  INPUT / HISTÓRICO
 
     public static EstadoAluno lerEstadoAluno(Map<String, Disciplina> grafo) {
 
@@ -97,13 +292,11 @@ public class Main {
         System.out.print("Máximo de créditos por período: ");
         config.maxCreditosPorPeriodo = sc.nextInt();
 
-        System.out.print("Quantos períodos deseja reservar para TCC/Estágio? ");
-        config.quantidadePeriodosTCC = sc.nextInt();
+        System.out.print("Quantos períodos deseja reservar para TCC? ");
+        config.periodosTCC = sc.nextInt();
 
         return config;
     }
-
-    // ================= HISTÓRICO =================
 
     public static void propagarReprovacoes(Map<String, Disciplina> grafo, EstadoAluno estado) {
 
@@ -158,129 +351,28 @@ public class Main {
         }
     }
 
-    // ================= TCC =================
-
-    public static boolean ehTCC(Disciplina d) {
-
-        String nome = d.nome.toLowerCase();
-
-        return nome.contains("trabalho de conclusão") ||
-                nome.contains("tcc") ||
-                nome.contains("estágio supervisionado");
-    }
-
-    // ================= PLANEJAMENTO =================
-
-    public static boolean podeCursar(Disciplina d, Set<String> feitas) {
-
-        for (Requisito r : d.requisitos) {
-
-            if (r.tipo == TipoRequisito.COREQUISITO) continue;
-
-            if (!feitas.contains(r.codigo)) return false;
-        }
-
-        return true;
-    }
-
-    public static Map<Integer, List<Disciplina>> montarPlano(
-            Map<String, Disciplina> grafoOriginal,
-            EstadoAluno estado,
-            Configuracao config
-    ) {
-
-        Map<String, Disciplina> grafo = new HashMap<>(grafoOriginal);
-
-        Map<Integer, List<Disciplina>> plano = new HashMap<>();
-
-        Set<String> feitas = new HashSet<>(estado.concluidas);
-
-        int periodoAtual = estado.ultimoPeriodoConcluido + 1;
-
-        while (!grafo.isEmpty()) {
-
-            // 🔥 REGRA: reservar últimos períodos para TCC
-            int restantes = grafo.size();
-
-            if (restantes <= config.quantidadePeriodosTCC) {
-
-                List<Disciplina> tccs = new ArrayList<>();
-
-                for (Disciplina d : grafo.values()) {
-                    if (ehTCC(d) && podeCursar(d, feitas)) {
-                        tccs.add(d);
-                    }
-                }
-
-                if (!tccs.isEmpty()) {
-
-                    plano.put(periodoAtual, tccs);
-
-                    for (Disciplina d : tccs) {
-                        feitas.add(d.codigo);
-                        grafo.remove(d.codigo);
-                    }
-
-                    periodoAtual++;
-                    continue;
-                }
-            }
-
-            // disciplinas normais
-            List<Disciplina> disponiveis = new ArrayList<>();
-
-            for (Disciplina d : grafo.values()) {
-                if (podeCursar(d, feitas) && !ehTCC(d)) {
-                    disponiveis.add(d);
-                }
-            }
-
-            disponiveis.sort(Comparator.comparingInt(d -> d.periodoMaximo));
-
-            int creditosAtual = 0;
-            List<Disciplina> alocadas = new ArrayList<>();
-
-            for (Disciplina d : disponiveis) {
-
-                if (creditosAtual + d.creditos > config.maxCreditosPorPeriodo)
-                    continue;
-
-                alocadas.add(d);
-                creditosAtual += d.creditos;
-            }
-
-            if (alocadas.isEmpty()) {
-                throw new RuntimeException("Deadlock: impossível montar grade.");
-            }
-
-            plano.put(periodoAtual, alocadas);
-
-            for (Disciplina d : alocadas) {
-                feitas.add(d.codigo);
-                grafo.remove(d.codigo);
-            }
-
-            periodoAtual++;
-        }
-
-        return plano;
-    }
+    //  PRINT
 
     public static void imprimirPlano(Map<Integer, List<Disciplina>> plano) {
 
-        System.out.println("\n===== PLANO GERADO =====");
+        System.out.println("\n PLANO GERADO \n");
 
-        for (int periodo : new TreeSet<>(plano.keySet())) {
+        List<Integer> periodos = new ArrayList<>(plano.keySet());
+        Collections.sort(periodos);
 
-            System.out.println("\nPeríodo " + periodo + ":");
+        for (int periodo : periodos) {
+
+            System.out.println("Período " + periodo + ":");
 
             for (Disciplina d : plano.get(periodo)) {
                 System.out.println("- " + d.codigo + " | " + d.nome + " (" + d.creditos + " créditos)");
             }
+
+            System.out.println();
         }
     }
 
-    // ================= SELENIUM =================
+    // WEBSCRAPING
 
     public static void selecionarCurso(WebDriver driver, String codigoCurso, String codigoMatriz) {
 
@@ -472,7 +564,7 @@ public class Main {
     }
 }
 
-// ================= MODELOS =================
+//  CLASSES
 
 class EstadoAluno {
     int ultimoPeriodoConcluido;
@@ -482,7 +574,7 @@ class EstadoAluno {
 
 class Configuracao {
     int maxCreditosPorPeriodo;
-    int quantidadePeriodosTCC;
+    int periodosTCC;
 }
 
 enum TipoRequisito {
